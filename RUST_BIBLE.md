@@ -686,3 +686,102 @@ fn main() {
 3. `tx.send(val)`: Drops the message into the channel. The thread continues working immediately after sending.
 4. `rx.recv()`: The Main thread freezes here. It waits. Even if the spawned thread takes 10 seconds to send, the Main thread waits 10 seconds here.
 5. **The Flow:** Thread A sends -> Channel -> Thread B receives. No shared variables, no conflicts.
+## 🔐 37. Shared State (`Mutex` & `Arc`)
+**Concept:** "The Locked Room."
+Threads often need to access the *same* piece of data (like a Global Counter or a Database Connection).
+* **The Problem:** If two threads change data at the exact same time, you get a "Race Condition" (math errors or crashes).
+* **The Solution:** We wrap the data in a `Mutex` (Mutual Exclusion). This puts a "lock" on the door. Only one thread can enter at a time.
+* **The Wrapper:** Since multiple threads need to own this lock, we wrap the Mutex in an `Arc` (Atomic Reference Counter).
+
+
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    // 1. Create the Data
+    // We wrap 0 in a Mutex (Lock), then wrap that in Arc (Shared Ownership).
+    let counter = Arc::new(Mutex::new(0));
+    
+    let mut handles = vec![];
+
+    // 2. Spawn 10 Threads
+    for _ in 0..10 {
+        // We clone the Arc to give this thread its own pointer to the lock.
+        let counter_ptr = Arc::clone(&counter);
+
+        let handle = thread::spawn(move || {
+            // 3. Acquire the Lock
+            // .lock() blocks the thread until the lock is free.
+            // .unwrap() crashes if a previous thread panicked while holding the lock (poisoning).
+            let mut num = counter_ptr.lock().unwrap();
+
+            // 4. Modify the Data
+            // We now have exclusive access to the number inside.
+            *num += 1;
+            
+            // 5. Release the Lock
+            // The lock is AUTOMATICALLY released when 'num' goes out of scope here.
+        });
+        handles.push(handle);
+    }
+
+    // 6. Wait for everyone
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // 7. Read the final value
+    println!("Result: {}", *counter.lock().unwrap());
+}
+
+🔍 Line-by-Line Logic
+Arc::new(Mutex::new(0)): This is the standard "Thread-Safe Sandwich."
+
+Inside: 0 (The raw data).
+
+Middle: Mutex (The guard that ensures only one accessor).
+
+Outside: Arc (The pointer that lets multiple threads hold onto the Mutex).
+
+counter_ptr.lock(): This is the traffic light. If the light is red (someone else is using the data), the thread sleeps right here. It wakes up when the light turns green.
+
+*num += 1: Because we have the lock, we can mutate the data safely, even though Arc looks immutable. This uses internal mutability logic similar to RefCell.
+
+38. The Safety Labels (Send & Sync)
+Concept: "The Compiler's Checklist." How does Rust know Arc is safe for threads but Rc is not? It looks for hidden "Shipping Labels" (Traits) on your data types.
+
+Send: "It is safe to move this item to another thread."
+
+Most types (i32, String, Box) are Send.
+
+Exception: Rc is not Send (because its reference counter isn't atomic).
+
+Sync: "It is safe to share references to this item between threads."
+
+Mutex is Sync.
+
+Exception: RefCell is not Sync.
+
+use std::thread;
+use std::rc::Rc;
+use std::sync::Arc;
+
+fn main() {
+    // --- EXPERIMENT 1: The Crash Test (Rc) ---
+    // let unsafe_ptr = Rc::new(5);
+    // thread::spawn(move || {
+        // println!("{:?}", unsafe_ptr); // <--- COMPILER ERROR!
+    // });
+    // Error: `Rc<i32>` cannot be sent between threads safely.
+    
+    // --- EXPERIMENT 2: The Safe Way (Arc) ---
+    let safe_ptr = Arc::new(5);
+    
+    thread::spawn(move || {
+        // Works perfectly because Arc implements the 'Send' trait.
+        println!("{:?}", safe_ptr); 
+    });
+}
+This is why Rust is "Fearless." You don't need to memorize every rule. If you try to pass an unsafe object (like Rc or RefCell) into a thread, the code will not compile. The Send and Sync traits act as automatic gatekeepers, preventing you from writing dangerous code before you even run it.
